@@ -1,10 +1,15 @@
-2001-04-05  Adam Fedor  <fedor@gnu.org>
+2001-04-08  Adam Fedor  <fedor@gnu.org>
 
 	* Version: 1.0.0
 	* NEWS: Regenerated.
 
+	* Source/NSLock.m (-tryLock): Return NO if our thread has
+	already has the lock (like OpenStep).
+	(-lockBeforeDate:): block until date if our thread already has 
+	the lock (like OpenStep).
+
 	* Source/NSData.m ([NSMutableDataMalloc
-	-replaceBytesInRange:withBytes:]): Check size, not length.
+	-replaceBytesInRange:withBytes:]): Check capacity, not length.
 
 2001-04-04  Adam Fedor  <fedor@gnu.org>
 
