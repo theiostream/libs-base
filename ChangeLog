@@ -1,3 +1,13 @@
+2001-03-28  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Source/NSProcessInfo.m: ([+load]) Fix in parsing of command line
+	arguments from /proc filesystem.  On newere kernels the command line
+	arguments are terminated by a nul, on older systems they are separated
+	by a nul.  The old code would add an extra (empty) argument to all
+	processes on newer kernels.  The new code will lose a trailing empty
+	argument on older kernels :-(  I view it as the lesser of two evils
+	since the extra empty arg confuses/breaks a lot of tools.
+
 2001-03-27  Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Source/NSFileManager.m: Fix file copying for MINGW by using
