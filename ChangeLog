@@ -1,3 +1,8 @@
+2001-04-05  Adam Fedor  <fedor@gnu.org>
+
+	* Version: 1.0.0
+	* NEWS: Regenerated.
+
 2001-04-04  Adam Fedor  <fedor@gnu.org>
 
 	* config.guess: Update to latest version
