@@ -1,3 +1,10 @@
+2001-03-27  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Source/NSFileManager.m: Fix file copying for MINGW by using
+	windows native copy function - fix by Michael Scheibler.
+	Also tidied to conform to coding standards, and fixed to use
+	O_BINARY where the system defines it.
+
 2001-03-26  Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Headers/Foundation/NSObject.h: GS_EXPORT updates for MINGW
