@@ -1,3 +1,25 @@
+2004-11-05  Adam Fedor  <fedor@gnu.org>
+
+	* Add support for threading, runloops, etc, on Windows.
+	* Headers/Foundation/NSPort.h: Extra Windows-only ivars
+	* Headers/Foundation/NSRunLoop.h: Extra enums and Windows category
+	* Headers/Additions/GNUstepBase/GSRunLoopCtxt.h,
+	Headers/Additions/GNUstepBase/GSRunLoopWatcher.h: New files.
+	* Source/GNUmakefile: Make unix or win32 subprojects depending on
+	target.
+	* Source/GSFileHandler.m: Updates for windows events.
+	* Source/GSTcpPort.m, Source/NSMessagePort.m: Idem.
+	* Source/NSSocketPort.m: Idem.
+	* Source/NSRunLoop.m: Move GSRunLoopWatcher and GSRunLoopCtxt 
+	classes to separate file.
+	* Source/NSThread.m (+[GSPerformHolder initialize]): Special
+	Windows initialization.
+	* Source/[unix|win]: New subprojects.
+	Patch from Luis Cabellos (Zhen).
+	
+	* configure.ac: Add test for poll emulation
+	* config/config.poll.c: New file.
+
 2004-11-04  Georg Fleischmann
 	* Headers/Foundation/NSTimeZone.h, Source/NSTimeZone.m
 	(+knownTimeZoneNames:): New method.

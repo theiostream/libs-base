@@ -1,0 +1,108 @@
+-=The win32 select bug=-
+
+Internally NSRunLoop use a call to ''select'' function. This function Block the
+thread during a passed time or until listen inputs processed something. This
+function wait for a number of file descriptors to change status. This works in
+UNIX like system because all input/output is treated like a file descriptor.
+
+However the runloop sources uses a kind of ''select'' call and under MinGW
+(Windows) select does not accept pipes. So this will fail. Consequences, all
+multithreading programs will not run. See
+[https://savannah.gnu.org/bugs/?func=detailitem&item_id=7952|Windows thread
+fail].
+
+Another problem or disadvantage is that win32 messages arent waited, and this
+messages arent get using a timer that raises every x seconds. That is a
+undesirable polling.
+
+-=The WaitForMultipleObjects Solution=-
+
+The Windows "WaitForMultipleObjects" function is like a select than wait than
+any one or all of the specified objects are in the signaled state or a specified
+time-out interval elapses. But only can wait for Synchronization Objects like
+events, semaphores or waitable timers. In some circumstances, you can also use a
+file, named pipe, or communications device as a synchronization object.
+
+The solution is replace "select" function with "WaitForMultipleObjects" function
+in the Windows version of GNUStep.
+
+The MsgWaitForMultipleObjects version is the same but also listen to windows
+messages from input events.
+
+Now you need to use win32 handles instead of file descriptors like unix systems.
+
+-=Get the win32 code outside=-
+
+First, we dont want to trash the old code. So we need to maintain the old code
+with the new win32 code. First, for the classes that really changed, we have two
+new subprojects inside of base source. One for the old version of the code
+''unix'' subproject and one for the new version of the code, ''win32''
+subproject. In the GNUmakefile we select one of another subproject with a
+define.
+
+For the code that isnt very large or little changes in others files are
+protected with a __#ifdef _MINGW32_ __ block. And so, we maintain the old
+version for non win32 systems.
+
+-=The new Run Loop=-
+
+First, the NSRunLoop get out the two classes, GSRunLoopCtxt and
+GSRunLoopWatcher, because that classes get a different version in win32 and we
+put in the subprojects. Now (win32 version) the NSRunLoop only have three types
+of items to listen (and timers but timers work out select/wait), ports, handles
+and win32 messages.
+
+Ports work very similar, when a port is listen, run loop call to a function or
+the port to get all the handles that are needed to wait for. This work like old
+version only instead of get file descriptor, we get win32 handles.
+
+Handles are directly waited in the run loop. Instead of add file descriptors to
+listen in several modes like read, write or exceptional mode, we add a handle
+created with the modes to listen.
+
+Win32 messages are different. We add a target to call when a windows message is
+in the queue. There arent multiples observers, only the last call remains.
+
+-=Events for every socket=-
+
+In classes that before add sockets to the run loop now add win32 handles. So we
+need to create handles that they correspond with sockets. In win32 it is
+possible to create event handles associated with sockets that raises when data
+is coming. And this events are added to the run loop like handles.
+
+-=A call for multiple events=-
+
+Before, in the Unix version, we add a socket several times in different modes.
+When a event ocurred in differents modes a method for event is called. Now, with
+win32 handles, only add a handle for all possible events and only a call to
+method is raise when handle change. Inside of this method we, now, have to query
+handle for get the event or events that ocurred.
+
+The odd of this is in receivedEvent the code that treats the event is pull out
+of the function and can be called several times from the method receivedEvent.
+
+-=Blocking calls in win32=-
+
+In unix version a Write event is raise when every send() non-blocking call is
+completed. But in win32 the Write event only is raise when send() failed for an
+un-ended previus call. I fix it with a new boolean variable, readyToSend that
+indicate when send() or when wait for Write Event. The pseudo-algorithm is:
+
+* readyToSend = YES
+* When send() failed with WSAEWOULDBLOCK error -> eadyToSend = NO
+* When FD_WRITE is raise -> readyToSend = YES
+* If I have to send()
+** if readyToSend = YES then send();
+** else run the RunLoop
+
+-=Minor changes=-
+
+The Windows Socket API errors arent get in errno global variable. A call to
+WSAGetLastError() is needed. EINTR and EAGAIN are win32 WSAEINTR and
+WSAEWOULDBLOCK errors.
+
+-=The win32 backend=-
+
+Now we have a method to add a target for when a message of windows is in the
+queue. Instead of create a timer for x seconds, we register the method in the
+run loop.

@@ -109,6 +109,18 @@ static GSFileHandle*	fh_stderr = nil;
 // Key to info dictionary for operation mode.
 static NSString*	NotificationKey = @"NSFileHandleNotificationKey";
 
+#ifdef __MINGW32__
+@interface GSFileHandle(mingw32)
+  WSAEVENT  event;
+  int numEvents;
+@end
+#endif
+
+@interface GSFileHandle(private)
+- (void) receivedEventRead;
+- (void) receivedEventWrite;
+@end
+
 @implementation GSFileHandle
 
 /**
@@ -298,7 +310,8 @@ getAddr(NSString* name, NSString* svc, NSString* pcl, struct sockaddr_in *sin)
 #if defined(__MINGW__)
 	  if (isSocket)
             {
-              closesocket((SOCKET)_get_osfhandle(descriptor));
+ 	      closesocket((SOCKET)_get_osfhandle(descriptor));
+	      WSACloseEvent( event );
             }
 #endif
 	  close(descriptor);
@@ -1121,6 +1134,7 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
   isNullDevice = YES;
   isStandardFile = YES;
   descriptor = -1;
+  numEvents = 0;
 #else
   self = [self initWithFileDescriptor: open("/dev/null", O_RDWR|O_BINARY)
 		       closeOnDealloc: YES];
@@ -1209,6 +1223,19 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
       writeOK = YES;
       acceptOK = YES;
       connectOK = YES;
+#ifdef __MINGW32__
+      if( isSocket )
+        {
+          event = CreateEvent(NULL, NO, NO, NULL);
+          if( event == WSA_INVALID_EVENT)
+            {
+              NSLog( @"Invalid Event - '%d'", WSAGetLastError());
+              return nil;
+            }
+          WSAEventSelect(_get_osfhandle(descriptor), event, FD_ALL_EVENTS);
+          numEvents = 0;
+        }
+#endif
     }
   return self;
 }
@@ -1480,7 +1507,12 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
       rval = [self write: (char*)ptr+pos length: toWrite];
       if (rval < 0)
 	{
+#ifdef __MINGW32__
+          if ( WSAGetLastError()== WSAEINTR ||
+                WSAGetLastError()== WSAEWOULDBLOCK)
+#else
 	  if (errno == EAGAIN || errno == EINTR)
+#endif
 	    {
 	      rval = 0;
 	    }
@@ -1690,6 +1722,8 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
   if (isSocket)
     {
       (void)closesocket((SOCKET)_get_osfhandle(descriptor));
+      WSACloseEvent( event );
+      event = WSA_INVALID_EVENT;
     }
 #endif
   (void)close(descriptor);
@@ -1784,6 +1818,10 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
   modes = (NSArray*)[info objectForKey: NSFileHandleNotificationMonitorModes];
   name = (NSString*)[info objectForKey: NotificationKey];
 
+  if( name == nil )
+    {
+      return;
+    }
   n = [NSNotification notificationWithName: name object: self userInfo: info];
 
   RELEASE(info);	/* Retained by the notification.	*/
@@ -1859,13 +1897,26 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 	NSFileHandleNotificationMonitorModes];
     }
 
+#ifdef __MINGW32__
+  --numEvents;
+  // if there was more than one event
+  if ( numEvents )
+    {
+      return;
+    }
+#endif
   if (modes && [modes count])
     {
       unsigned int	i;
 
       for (i = 0; i < [modes count]; i++)
 	{
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+	  [l removeEvent: (void*)(gsaddr)event
+		    type: ET_HANDLE
+		 forMode: [modes objectAtIndex: i]
+		     all: YES];
+#elif defined(__MINGW__)
 	  [l removeEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		    type: ET_RDESC
 		 forMode: [modes objectAtIndex: i]
@@ -1880,7 +1931,12 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
     }
   else
     {
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+      [l removeEvent: (void*)(gsaddr)event
+	        type: ET_HANDLE
+	     forMode: NSDefaultRunLoopMode
+                 all: YES];
+#elif defined(__MINGW__)
       [l removeEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		type: ET_RDESC
 	     forMode: NSDefaultRunLoopMode
@@ -1913,13 +1969,26 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
       modes=(NSArray*)[info objectForKey: NSFileHandleNotificationMonitorModes];
     }
 
+#ifdef __MINGW32__
+  --numEvents;
+  // if there was more than one event
+  if ( numEvents )
+    {
+      return;
+    }
+#endif
   if (modes && [modes count])
     {
       unsigned int	i;
 
       for (i = 0; i < [modes count]; i++)
 	{
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+          [l removeEvent: (void*)(gsaddr)event
+	            type: ET_HANDLE
+	         forMode: [modes objectAtIndex: i]
+                     all: YES];
+#elif defined(__MINGW__)
 	  [l removeEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		    type: ET_WDESC
 		 forMode: [modes objectAtIndex: i]
@@ -1934,7 +2003,12 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
     }
   else
     {
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+      [l removeEvent: (void*)(gsaddr)event
+                type: ET_HANDLE
+	     forMode: NSDefaultRunLoopMode
+                 all: YES];
+#elif defined(__MINGW__)
       [l removeEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		type: ET_WDESC
 	     forMode: NSDefaultRunLoopMode
@@ -1956,6 +2030,7 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
     {
       return;
     }
+
   l = [NSRunLoop currentRunLoop];
   [self setNonBlocking: YES];
   if (modes && [modes count])
@@ -1964,7 +2039,16 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 
       for (i = 0; i < [modes count]; i++)
 	{
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+          // if its listen dont addEvent again
+          if ( numEvents == 0)
+            {
+  	      [l addEvent: (void*)(gsaddr)event
+		     type: ET_HANDLE
+	          watcher: self
+	          forMode: [modes objectAtIndex: i]];
+	    }
+#elif defined(__MINGW__)
 	  [l addEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		 type: ET_RDESC
 	      watcher: self
@@ -1980,7 +2064,16 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
     }
   else
     {
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+      // if its listen dont addEvent again
+      if ( numEvents == 0)
+        {
+          [l addEvent: (void*)(gsaddr)event
+	         type: ET_HANDLE
+	      watcher: self
+	      forMode: NSDefaultRunLoopMode];
+	}
+#elif defined(__MINGW__)
       [l addEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 	     type: ET_RDESC
 	  watcher: self
@@ -1992,6 +2085,9 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 	  forMode: NSDefaultRunLoopMode];
 #endif
     }
+#ifdef __MINGW32__
+    ++numEvents;
+#endif
 }
 
 - (void) watchWriteDescriptor
@@ -2015,7 +2111,16 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 
 	  for (i = 0; i < [modes count]; i++)
 	    {
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+              // if its listen dont addEvent again
+              if ( numEvents == 0)
+                {
+	          [l addEvent: (void*)(gsaddr)event
+		         type: ET_HANDLE
+		      watcher: self
+		      forMode: [modes objectAtIndex: i]];
+		}
+#elif defined(__MINGW__)
 	      [l addEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		     type: ET_WDESC
 		  watcher: self
@@ -2030,7 +2135,16 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 	}
       else
 	{
-#if defined(__MINGW__)
+#ifdef __MINGW32__
+          // if its listen dont addEvent again
+          if ( numEvents == 0 )
+            {
+              [l addEvent: (void*)(gsaddr)event
+		     type: ET_HANDLE
+	          watcher: self
+	          forMode: NSDefaultRunLoopMode];
+	    }
+#elif defined(__MINGW__)
 	  [l addEvent: (void*)(gsaddr)(SOCKET)_get_osfhandle(descriptor)
 		 type: ET_WDESC
 	      watcher: self
@@ -2042,6 +2156,200 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 	      forMode: NSDefaultRunLoopMode];
 #endif
 	}
+#ifdef __MINGW32__
+      ++numEvents;
+#endif
+    }
+}
+
+- (void) receivedEventRead
+{
+  NSString	*operation;
+
+  operation = [readInfo objectForKey: NotificationKey];
+  if (operation == NSFileHandleConnectionAcceptedNotification)
+    {
+      struct sockaddr_in	buf;
+#if defined(__MINGW__)
+      SOCKET		        desc;
+#else
+      int			desc;
+#endif
+      int			blen = sizeof(buf);
+
+#if defined(__MINGW__)
+      desc = accept((SOCKET)_get_osfhandle(descriptor), (struct sockaddr*)&buf, &blen);
+#else
+      desc = accept(descriptor, (struct sockaddr*)&buf, &blen);
+#endif
+      if (desc == INVALID_SOCKET)
+	{
+	  NSString	*s;
+
+	  s = [NSString stringWithFormat: @"Accept attempt failed - %s",
+		GSLastErrorStr(errno)];
+	  [readInfo setObject: s forKey: GSFileHandleNotificationError];
+	}
+      else
+	{ // Accept attempt completed.
+	  GSFileHandle		*h;
+	  struct sockaddr_in	sin;
+	  int			size = sizeof(sin);
+
+#if defined(__MINGW__)
+	  h = [[[self class] alloc] initWithNativeHandle: (void*)desc
+						closeOnDealloc: YES];
+#else
+	  h = [[[self class] alloc] initWithFileDescriptor: desc
+						closeOnDealloc: YES];
+#endif
+	  h->isSocket = YES;
+	  getpeername(desc, (struct sockaddr*)&sin, &size);
+	  [h setAddr: &sin];
+	  [readInfo setObject: h
+		   forKey: NSFileHandleNotificationFileHandleItem];
+	  RELEASE(h);
+	}
+      [self postReadNotification];
+    }
+  else if (operation == NSFileHandleDataAvailableNotification)
+    {
+      [self postReadNotification];
+    }
+  else
+    {
+      NSMutableData	*item;
+      int		length;
+      int		received = 0;
+      char		buf[NETBUF_SIZE];
+
+      item = [readInfo objectForKey: NSFileHandleNotificationDataItem];
+      /*
+       * We may have a maximum data size set...
+       */
+      if (readMax > 0)
+        {
+          length = (unsigned int)readMax - [item length];
+          if (length > (int)sizeof(buf))
+            {
+	      length = sizeof(buf);
+	    }
+	}
+      else
+	{
+	  length = sizeof(buf);
+	}
+
+      received = [self read: buf length: length];
+      if (received == 0)
+        { // Read up to end of file.
+          [self postReadNotification];
+        }
+      else if (received < 0)
+        {
+#ifdef __MINGW32__
+          if ( WSAGetLastError()!= WSAEINTR &&
+                WSAGetLastError()!= WSAEWOULDBLOCK)
+#else
+          if (errno != EAGAIN && errno != EINTR)
+#endif
+            {
+	      NSString	*s;
+
+	      s = [NSString stringWithFormat: @"Read attempt failed - %s",
+		    GSLastErrorStr(errno)];
+	      [readInfo setObject: s forKey: GSFileHandleNotificationError];
+	      [self postReadNotification];
+	    }
+	}
+      else
+	{
+	  [item appendBytes: buf length: received];
+	  if (readMax < 0 || (readMax > 0 && (int)[item length] == readMax))
+	    {
+	      // Read a single chunk of data
+	      [self postReadNotification];
+	    }
+	}
+    }
+}
+
+- (void) receivedEventWrite
+{
+  NSString	*operation;
+  NSMutableDictionary	*info;
+
+  info = [writeInfo objectAtIndex: 0];
+  operation = [info objectForKey: NotificationKey];
+  if (operation == GSFileHandleConnectCompletionNotification
+	|| operation == GSSOCKSConnect)
+    { // Connection attempt completed.
+      int	result;
+      int	len = sizeof(result);
+
+#if defined(__MINGW__)
+      if (getsockopt((SOCKET)_get_osfhandle(descriptor), SOL_SOCKET, SO_ERROR,
+        (char*)&result, &len) == 0 && result != 0)
+#else
+      if (getsockopt(descriptor, SOL_SOCKET, SO_ERROR,
+        (char*)&result, &len) == 0 && result != 0)
+#endif
+        {
+          NSString	*s;
+
+          s = [NSString stringWithFormat: @"Connect attempt failed - %s",
+		GSLastErrorStr(result)];
+          [info setObject: s forKey: GSFileHandleNotificationError];
+        }
+      else
+        {
+          readOK = YES;
+          writeOK = YES;
+        }
+      connectOK = NO;
+      [self postWriteNotification];
+    }
+  else
+    {
+      NSData	*item;
+      int		length;
+      const void	*ptr;
+
+      item = [info objectForKey: NSFileHandleNotificationDataItem];
+      length = [item length];
+      ptr = [item bytes];
+      if (writePos < length)
+        {
+          int	written;
+
+          written = [self write: (char*)ptr+writePos
+    		     length: length-writePos];
+          if (written <= 0)
+            {
+#ifdef __MINGW32__
+              if ( written < 0 && WSAGetLastError()!= WSAEINTR &&
+                    WSAGetLastError()!= WSAEWOULDBLOCK)
+#else
+	      if (written < 0 && errno != EAGAIN && errno != EINTR)
+#endif
+	        {
+	          NSString	*s;
+
+	          s = [NSString stringWithFormat:
+	        	@"Write attempt failed - %s", GSLastErrorStr(errno)];
+	          [info setObject: s forKey: GSFileHandleNotificationError];
+	          [self postWriteNotification];
+	        }
+	    }
+	  else
+            {
+	      writePos += written;
+	    }
+	}
+      if (writePos >= length)
+        { // Write operation completed.
+          [self postWriteNotification];
+        }
     }
 }
 
@@ -2050,7 +2358,9 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
 		 extra: (void*)extra
 	       forMode: (NSString*)mode
 {
-  NSString	*operation;
+#ifdef __MINGW32__
+  WSANETWORKEVENTS ocurredEvents;
+#endif
 
   NSDebugMLLog(@"NSFileHandle", @"%@ event: %d", self, type);
 
@@ -2058,183 +2368,64 @@ NSString * const GSSOCKSRecvAddr = @"GSSOCKSRecvAddr";
     {
       [self setNonBlocking: YES];
     }
-
+#ifdef __MINGW32__
+  if(WSAEnumNetworkEvents((SOCKET)_get_osfhandle(descriptor), 
+          event, &ocurredEvents)==SOCKET_ERROR)
+    {
+      NSLog(@"Error getting event type %d", WSAGetLastError());
+      abort();
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_CONNECT )
+    {
+      [self receivedEventWrite];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_CONNECT;
+    }
+  if( ocurredEvents.lNetworkEvents & FD_ACCEPT )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_ACCEPT;
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_WRITE )
+    {
+      [self receivedEventWrite];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_WRITE;
+    }
+  if( ocurredEvents.lNetworkEvents & FD_READ )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_READ;
+    }
+  if( ocurredEvents.lNetworkEvents & FD_OOB )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_OOB;
+    }
+  if( ocurredEvents.lNetworkEvents & FD_CLOSE )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      ocurredEvents.lNetworkEvents ^= FD_CLOSE;
+    }
+  if ( ocurredEvents.lNetworkEvents )
+    {
+      NSLog(@"Event not get %d", ocurredEvents.lNetworkEvents );
+      abort();      
+    }
+#else
   if (type == ET_RDESC)
     {
-      operation = [readInfo objectForKey: NotificationKey];
-      if (operation == NSFileHandleConnectionAcceptedNotification)
-	{
-	  struct sockaddr_in	buf;
-#if defined(__MINGW__)
-	  SOCKET		desc;
-#else
-	  int			desc;
-#endif
-	  int			blen = sizeof(buf);
-
-#if defined(__MINGW__)
-	  desc = accept((SOCKET)_get_osfhandle(descriptor), (struct sockaddr*)&buf, &blen);
-#else
-	  desc = accept(descriptor, (struct sockaddr*)&buf, &blen);
-#endif
-	  if (desc == INVALID_SOCKET)
-	    {
-	      NSString	*s;
-
-	      s = [NSString stringWithFormat: @"Accept attempt failed - %s",
-		GSLastErrorStr(errno)];
-	      [readInfo setObject: s forKey: GSFileHandleNotificationError];
-	    }
-	  else
-	    { // Accept attempt completed.
-	      GSFileHandle		*h;
-	      struct sockaddr_in	sin;
-	      int			size = sizeof(sin);
-
-#if defined(__MINGW__)
-	      h = [[[self class] alloc] initWithNativeHandle: (void*)desc
-						closeOnDealloc: YES];
-#else
-	      h = [[[self class] alloc] initWithFileDescriptor: desc
-						closeOnDealloc: YES];
-#endif
-	      h->isSocket = YES;
-	      getpeername(desc, (struct sockaddr*)&sin, &size);
-	      [h setAddr: &sin];
-	      [readInfo setObject: h
-			   forKey: NSFileHandleNotificationFileHandleItem];
-	      RELEASE(h);
-	    }
-	  [self postReadNotification];
-	}
-      else if (operation == NSFileHandleDataAvailableNotification)
-	{
-	  [self postReadNotification];
-	}
-      else
-	{
-	  NSMutableData	*item;
-	  int		length;
-	  int		received = 0;
-	  char		buf[NETBUF_SIZE];
-
-	  item = [readInfo objectForKey: NSFileHandleNotificationDataItem];
-	  /*
-	   * We may have a maximum data size set...
-	   */
-	  if (readMax > 0)
-	    {
-	      length = (unsigned int)readMax - [item length];
-	      if (length > (int)sizeof(buf))
-		{
-		  length = sizeof(buf);
-		}
-	    }
-	  else
-	    {
-	      length = sizeof(buf);
-	    }
-
-	  received = [self read: buf length: length];
-	  if (received == 0)
-	    { // Read up to end of file.
-	      [self postReadNotification];
-	    }
-	  else if (received < 0)
-	    {
-	      if (errno != EAGAIN && errno != EINTR)
-		{
-		  NSString	*s;
-
-		  s = [NSString stringWithFormat: @"Read attempt failed - %s",
-		    GSLastErrorStr(errno)];
-		  [readInfo setObject: s forKey: GSFileHandleNotificationError];
-		  [self postReadNotification];
-		}
-	    }
-	  else
-	    {
-	      [item appendBytes: buf length: received];
-	      if (readMax < 0 || (readMax > 0 && (int)[item length] == readMax))
-		{
-		  // Read a single chunk of data
-		  [self postReadNotification];
-		}
-	    }
-	}
+      [self receivedEventRead];
     }
   else
     {
-      NSMutableDictionary	*info;
-
-      info = [writeInfo objectAtIndex: 0];
-      operation = [info objectForKey: NotificationKey];
-      if (operation == GSFileHandleConnectCompletionNotification
-	|| operation == GSSOCKSConnect)
-	{ // Connection attempt completed.
-	  int	result;
-	  int	len = sizeof(result);
-
-#if defined(__MINGW__)
-	  if (getsockopt((SOCKET)_get_osfhandle(descriptor), SOL_SOCKET, SO_ERROR,
-	    (char*)&result, &len) == 0 && result != 0)
-#else
-	  if (getsockopt(descriptor, SOL_SOCKET, SO_ERROR,
-	    (char*)&result, &len) == 0 && result != 0)
-#endif
-	    {
-	      NSString	*s;
-
-	      s = [NSString stringWithFormat: @"Connect attempt failed - %s",
-		GSLastErrorStr(result)];
-	      [info setObject: s forKey: GSFileHandleNotificationError];
-	    }
-	  else
-	    {
-	      readOK = YES;
-	      writeOK = YES;
-	    }
-	  connectOK = NO;
-	  [self postWriteNotification];
-	}
-      else
-	{
-	  NSData	*item;
-	  int		length;
-	  const void	*ptr;
-
-	  item = [info objectForKey: NSFileHandleNotificationDataItem];
-	  length = [item length];
-	  ptr = [item bytes];
-	  if (writePos < length)
-	    {
-	      int	written;
-
-	      written = [self write: (char*)ptr+writePos
-			     length: length-writePos];
-	      if (written <= 0)
-		{
-		  if (written < 0 && errno != EAGAIN && errno != EINTR)
-		    {
-		      NSString	*s;
-
-		      s = [NSString stringWithFormat:
-			@"Write attempt failed - %s", GSLastErrorStr(errno)];
-		      [info setObject: s forKey: GSFileHandleNotificationError];
-		      [self postWriteNotification];
-		    }
-		}
-	      else
-		{
-		  writePos += written;
-		}
-	    }
-	  if (writePos >= length)
-	    { // Write operation completed.
-	      [self postWriteNotification];
-	    }
-	}
+      [self receivedEventWrite];
     }
+#endif
 }
 
 - (NSDate*) timedOutEvent: (void*)data

@@ -804,6 +804,9 @@ static NSDate *theFuture;
   unsigned	count = [m count];
   unsigned	i;
   BOOL		pipeOK = NO;
+#ifdef __MINGW__
+  HANDLE readh, writeh;
+#endif
 
   theFuture = RETAIN([NSDate distantFuture]);
 
@@ -820,7 +823,6 @@ static NSDate *theFuture;
   }
 #else
   {
-    HANDLE readh, writeh;
 
     if (CreatePipe(&readh, &writeh, NULL, 0) != 0)
       {
@@ -852,6 +854,14 @@ static NSDate *theFuture;
     {
       [loop addEvent: (void*)inputFd
 		type: ET_RDESC
+	     watcher: (id<RunLoopEvents>)self
+	     forMode: [m objectAtIndex: i]];
+    }
+#else
+  for (i = 0; i < count; i++ )
+    {
+      [loop addEvent: (void*)readh
+		type: ET_HANDLE
 	     watcher: (id<RunLoopEvents>)self
 	     forMode: [m objectAtIndex: i]];
     }

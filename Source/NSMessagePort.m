@@ -207,6 +207,14 @@ typedef enum {
   unsigned		nItems;		/* Number of items to be read.	*/
   GSHandleState		state;		/* State of the handle.		*/
   unsigned int		addrNum;	/* Address number within host.	*/
+#ifdef __MINGW__
+  WSAEVENT              event;          /* Win32 event associated to socket */
+  WSAEVENT              eventTemp;      /* Win32 event for asynchronous */
+@public
+  BOOL                  inReplyMode;    /* Indicate when have addEvent self */
+  BOOL                  readyToSend;    /* Indicate when send */
+#endif
+
 @public
   NSRecursiveLock	*myLock;	/* Lock for this handle.	*/
   BOOL			caller;		/* Did we connect to other end?	*/
@@ -219,12 +227,17 @@ typedef enum {
 + (GSMessageHandle*) handleWithDescriptor: (int)d;
 - (BOOL) connectToPort: (NSMessagePort*)aPort beforeDate: (NSDate*)when;
 - (int) descriptor;
+#ifdef __MINGW32__
+- (int) eventHandle;
+#endif
 - (void) invalidate;
 - (BOOL) isValid;
 - (void) receivedEvent: (void*)data
                   type: (RunLoopEventType)type
 		 extra: (void*)extra
 	       forMode: (NSString*)mode;
+- (void) receivedEventRead;
+- (void) receivedEventWrite;
 - (NSMessagePort*) recvPort;
 - (BOOL) sendMessage: (NSArray*)components beforeDate: (NSDate*)when;
 - (NSMessagePort*) sendPort;
@@ -311,6 +324,11 @@ static Class	runLoopClass;
   int		e;
 #endif /* __MINGW__ */
 
+#ifdef __MINGW__
+  WSAEVENT ev;
+  int rc;
+#endif
+
   if (d < 0)
     {
       NSLog(@"illegal descriptor (%d) for message handle", d);
@@ -347,6 +365,20 @@ static Class	runLoopClass;
   handle->wMsgs = [NSMutableArray new];
   handle->myLock = [GSLazyRecursiveLock new];
   handle->valid = YES;
+#ifdef __MINGW32__
+  ev = (WSAEVENT)CreateEvent(NULL,NO,NO,NULL);
+  if( ev == WSA_INVALID_EVENT)
+    {
+      NSLog( @"Invalid Event - '%d'", WSAGetLastError());
+      return nil;
+    }
+  rc = WSAEventSelect(handle->desc, ev, FD_ALL_EVENTS);
+  NSAssert( rc == 0, @"WSAEventSelect failed!");
+  
+  handle->event = ev;
+  handle->inReplyMode = NO;
+  handle->readyToSend = YES;
+#endif
   return AUTORELEASE(handle);
 }
 
@@ -430,6 +462,14 @@ static Class	runLoopClass;
 
   state = GS_H_TRYCON;
   l = [NSRunLoop currentRunLoop];
+#ifdef __MINGW32__
+  NSAssert( event != WSA_INVALID_EVENT, @"Socket without win32 event!" );
+  [l addEvent: (void*)(gsaddr)event
+	 type: ET_HANDLE
+      watcher: self
+      forMode: NSConnectionReplyMode];
+  inReplyMode = YES;
+#else
   [l addEvent: (void*)(gsaddr)desc
 	 type: ET_WDESC
       watcher: self
@@ -438,6 +478,7 @@ static Class	runLoopClass;
 	 type: ET_EDESC
       watcher: self
       forMode: NSConnectionReplyMode];
+#endif
 
   while (valid == YES && state == GS_H_TRYCON
     && [when timeIntervalSinceNow] > 0)
@@ -445,6 +486,13 @@ static Class	runLoopClass;
       [l runMode: NSConnectionReplyMode beforeDate: when];
     }
 
+#ifdef __MINGW32__
+  [l removeEvent: (void*)(gsaddr)event
+	    type: ET_HANDLE
+	 forMode: NSConnectionReplyMode
+	     all: NO];
+  inReplyMode = NO;
+#else
   [l removeEvent: (void*)(gsaddr)desc
 	    type: ET_WDESC
 	 forMode: NSConnectionReplyMode
@@ -453,6 +501,7 @@ static Class	runLoopClass;
 	    type: ET_EDESC
 	 forMode: NSConnectionReplyMode
 	     all: NO];
+#endif
 
   if (state == GS_H_TRYCON)
     {
@@ -499,6 +548,13 @@ static Class	runLoopClass;
   return desc;
 }
 
+#ifdef __MINGW32__
+- (int) eventHandle
+{
+  return (int)event;
+}
+#endif
+
 - (void) gcFinalize
 {
   [self invalidate];
@@ -517,6 +573,12 @@ static Class	runLoopClass;
 
 	  valid = NO;
 	  l = [runLoopClass currentRunLoop];
+#ifdef __MINGW32__
+	  [l removeEvent: (void*)(gsaddr)event
+		    type: ET_HANDLE
+		 forMode: nil
+		     all: YES];
+#else
 	  [l removeEvent: (void*)(gsaddr)desc
 		    type: ET_RDESC
 		 forMode: nil
@@ -529,10 +591,15 @@ static Class	runLoopClass;
 		    type: ET_EDESC
 		 forMode: nil
 		     all: YES];
+#endif
 	  NSDebugMLLog(@"NSMessagePort", @"invalidated 0x%x in thread 0x%x",
 	    self, GSCurrentThread());
 	  [[self recvPort] removeHandle: self];
 	  [[self sendPort] removeHandle: self];
+#ifdef __MINGW32__
+          WSACloseEvent( event );
+          event = WSA_INVALID_EVENT;
+#endif
 	}
       M_UNLOCK(myLock);
     }
@@ -551,191 +618,139 @@ static Class	runLoopClass;
     return GS_GC_UNHIDE(recvPort);
 }
 
-- (void) receivedEvent: (void*)data
-                  type: (RunLoopEventType)type
-		 extra: (void*)extra
-	       forMode: (NSString*)mode
+- (void) receivedEventRead
 {
-  NSDebugMLLog(@"NSMessagePort_details",
-    @"received %s event on 0x%x in thread 0x%x",
-    type == ET_RPORT ? "read" : "write", self, GSCurrentThread());
-  /*
-   * If we have been invalidated (desc < 0) then we should ignore this
-   * event and remove ourself from the runloop.
-   */
-  if (desc < 0)
-    {
-      NSRunLoop	*l = [runLoopClass currentRunLoop];
+  unsigned	want;
+  void	*bytes;
+  int	res;
 
-      [l removeEvent: data
-		type: ET_WDESC
-	     forMode: mode
-		 all: YES];
-      [l removeEvent: data
-		type: ET_EDESC
-	     forMode: mode
-		 all: YES];
-      return;
+  /*
+   * Make sure we have a buffer big enough to hold all the data we are
+   * expecting, or NETBLOCK bytes, whichever is greater.
+   */
+  if (rData == nil)
+    {
+      rData = [[mutableDataClass alloc] initWithLength: NETBLOCK];
+      rWant = sizeof(GSPortItemHeader);
+      rLength = 0;
+      want = NETBLOCK;
+    }
+  else
+    {
+      want = [rData length];
+      if (want < rWant)
+        {
+          want = rWant;
+          [rData setLength: want];
+        }
+      if (want < NETBLOCK)
+        {
+          want = NETBLOCK;
+          [rData setLength: want];
+        }
     }
 
-  M_LOCK(myLock);
-
-  if (type == ET_RPORT)
-    {
-      unsigned	want;
-      void	*bytes;
-      int	res;
-
-      /*
-       * Make sure we have a buffer big enough to hold all the data we are
-       * expecting, or NETBLOCK bytes, whichever is greater.
-       */
-      if (rData == nil)
-	{
-	  rData = [[mutableDataClass alloc] initWithLength: NETBLOCK];
-	  rWant = sizeof(GSPortItemHeader);
-	  rLength = 0;
-	  want = NETBLOCK;
-	}
-      else
-	{
-	  want = [rData length];
-	  if (want < rWant)
-	    {
-	      want = rWant;
-	      [rData setLength: want];
-	    }
-	  if (want < NETBLOCK)
-	    {
-	      want = NETBLOCK;
-	      [rData setLength: want];
-	    }
-	}
-
-      /*
-       * Now try to fill the buffer with data.
-       */
-      bytes = [rData mutableBytes];
+  /*
+   * Now try to fill the buffer with data.
+   */
+  bytes = [rData mutableBytes];
 #ifdef __MINGW__
-      res = recv(desc, bytes + rLength, want - rLength, 0);
+  res = recv(desc, bytes + rLength, want - rLength, 0);
 #else
-      res = read(desc, bytes + rLength, want - rLength);
+  res = read(desc, bytes + rLength, want - rLength);
 #endif
-      if (res <= 0)
-	{
-	  if (res == 0)
-	    {
-	      NSDebugMLLog(@"NSMessagePort", @"read eof on 0x%x in thread 0x%x",
-		self, GSCurrentThread());
-	      M_UNLOCK(myLock);
-	      [self invalidate];
-	      return;
-	    }
-	  else if (errno != EINTR && errno != EAGAIN)
-	    {
-	      NSDebugMLLog(@"NSMessagePort",
-		@"read failed - %s on 0x%x in thread 0x%x",
-		GSLastErrorStr(errno), self, GSCurrentThread());
-	      M_UNLOCK(myLock);
-	      [self invalidate];
-	      return;
-	    }
-	  res = 0;	/* Interrupted - continue	*/
-	}
-      NSDebugMLLog(@"NSMessagePort_details",
-	@"read %d bytes on 0x%x in thread 0x%x",
-	res, self, GSCurrentThread());
-      rLength += res;
+  if (res <= 0)
+    {
+      if (res == 0)
+        {
+          NSDebugMLLog(@"NSMessagePort", @"read eof on 0x%x in thread 0x%x",
+                self, GSCurrentThread());
+          [self invalidate];
+	  return;
+        }
+#ifdef __MINGW__
+      else if ( WSAGetLastError()!= WSAEINTR &&
+                WSAGetLastError()!= WSAEWOULDBLOCK)
+#else
+      else if (errno != EINTR && errno != EAGAIN)
+#endif
+        {
+          NSDebugMLLog(@"NSMessagePort",
+        	@"read failed - %s on 0x%x in thread 0x%x",
+          GSLastErrorStr(errno), self, GSCurrentThread());
+	  [self invalidate];
+	  return;
+        }
+	res = 0;	/* Interrupted - continue	*/
+    }
+  NSDebugMLLog(@"NSMessagePort_details", @"read %d bytes on 0x%x in thread 0x%x",
+        res, self, GSCurrentThread());
+  rLength += res;
 
-      while (valid == YES && rLength >= rWant)
-	{
-	  BOOL	shouldDispatch = NO;
+  while (valid == YES && rLength >= rWant)
+    {
+      BOOL	shouldDispatch = NO;
 
-	  switch (rType)
-	    {
-	      case GSP_NONE:
-		{
-		  GSPortItemHeader	*h;
-		  unsigned		l;
+      switch (rType)
+        {
+          case GSP_NONE:
+            {
+	      GSPortItemHeader	*h;
+	      unsigned		l;
 
+	      /*
+	       * We have read an item header - set up to read the
+	       * remainder of the item.
+	       */
+	      h = (GSPortItemHeader*)bytes;
+	      rType = GSSwapBigI32ToHost(h->type);
+	      l = GSSwapBigI32ToHost(h->length);
+	      if (rType == GSP_PORT)
+	        {
+	          if (l > 512)
+	            {
+		      NSLog(@"%@ - unreasonable length (%u) for port",
+		        self, l);
+		      [self invalidate];
+		      return;
+		    }
 		  /*
-		   * We have read an item header - set up to read the
-		   * remainder of the item.
+		   * For a port, we leave the item header in the data
+	           * so that our decode function can check length info.
 		   */
-		  h = (GSPortItemHeader*)bytes;
-		  rType = GSSwapBigI32ToHost(h->type);
-		  l = GSSwapBigI32ToHost(h->length);
-		  if (rType == GSP_PORT)
-		    {
-		      if (l > 512)
-			{
-			  NSLog(@"%@ - unreasonable length (%u) for port",
-			    self, l);
-			  M_UNLOCK(myLock);
-			  [self invalidate];
-			  return;
-			}
-		      /*
-		       * For a port, we leave the item header in the data
-		       * so that our decode function can check length info.
-		       */
-		      rWant += l;
-		    }
-		  else if (rType == GSP_DATA)
-		    {
-		      if (l == 0)
-			{
-			  NSData	*d;
+		  rWant += l;
+		}
+	      else if (rType == GSP_DATA)
+	        {
+	          if (l == 0)
+	            {
+		      NSData	*d;
 
-			  /*
-			   * For a zero-length data chunk, we create an empty
-			   * data object and add it to the current message.
-			   */
-			  rType = GSP_NONE;	/* ready for a new item	*/
-			  rLength -= rWant;
-			  if (rLength > 0)
-			    {
-			      memmove(bytes, bytes + rWant, rLength);
-			    }
-			  rWant = sizeof(GSPortItemHeader);
-			  d = [mutableDataClass new];
-			  [rItems addObject: d];
-			  RELEASE(d);
-			  if (nItems == [rItems count])
-			    {
-			      shouldDispatch = YES;
-			    }
-			}
-		      else
-			{
-			  if (l > maxDataLength)
-			    {
-			      NSLog(@"%@ - unreasonable length (%u) for data",
-				self, l);
-			      M_UNLOCK(myLock);
-			      [self invalidate];
-			      return;
-			    }
-			  /*
-			   * If not a port or zero length data,
-			   * we discard the data read so far and fill the
-			   * data object with the data item from the msg.
-			   */
-			  rLength -= rWant;
-			  if (rLength > 0)
-			    {
-			      memmove(bytes, bytes + rWant, rLength);
-			    }
-			  rWant = l;
-			}
+		      /*
+		       * For a zero-length data chunk, we create an empty
+		       * data object and add it to the current message.
+		       */
+		      rType = GSP_NONE;	/* ready for a new item	*/
+		      rLength -= rWant;
+		      if (rLength > 0)
+		        {
+		          memmove(bytes, bytes + rWant, rLength);
+		        }
+		      rWant = sizeof(GSPortItemHeader);
+		      d = [mutableDataClass new];
+		      [rItems addObject: d];
+		      RELEASE(d);
+		      if (nItems == [rItems count])
+		        {
+		          shouldDispatch = YES;
+		        }
 		    }
-		  else if (rType == GSP_HEAD)
+		  else
 		    {
 		      if (l > maxDataLength)
-			{
-			  NSLog(@"%@ - unreasonable length (%u) for data",
-			    self, l);
-			  M_UNLOCK(myLock);
+		        {
+		          NSLog(@"%@ - unreasonable length (%u) for data",
+		            self, l);
 			  [self invalidate];
 			  return;
 			}
@@ -746,301 +761,446 @@ static Class	runLoopClass;
 		       */
 		      rLength -= rWant;
 		      if (rLength > 0)
-			{
-			  memmove(bytes, bytes + rWant, rLength);
-			}
+		        {
+		          memmove(bytes, bytes + rWant, rLength);
+		        }
 		      rWant = l;
 		    }
-		  else
-		    {
-		      NSLog(@"%@ - bad data received on port handle, rType=%i",
-			self, rType);
-		      M_UNLOCK(myLock);
+		}
+	      else if (rType == GSP_HEAD)
+	        {
+	          if (l > maxDataLength)
+	            {
+		      NSLog(@"%@ - unreasonable length (%u) for data",
+		        self, l);
 		      [self invalidate];
 		      return;
 		    }
-		}
-		break;
-
-	      case GSP_HEAD:
-		{
-		  GSPortMsgHeader	*h;
-
-		  rType = GSP_NONE;	/* ready for a new item	*/
 		  /*
-		   * We have read a message header - set up to read the
-		   * remainder of the message.
+		   * If not a port or zero length data,
+		   * we discard the data read so far and fill the
+		   * data object with the data item from the msg.
 		   */
-		  h = (GSPortMsgHeader*)bytes;
-		  rId = GSSwapBigI32ToHost(h->mId);
-		  nItems = GSSwapBigI32ToHost(h->nItems);
-		  NSAssert(nItems >0, NSInternalInconsistencyException);
-		  rItems
-		    = [mutableArrayClass allocWithZone: NSDefaultMallocZone()];
-		  rItems = [rItems initWithCapacity: nItems];
-		  if (rWant > sizeof(GSPortMsgHeader))
+		  rLength -= rWant;
+		  if (rLength > 0)
 		    {
-		      NSData	*d;
-
-		      /*
-		       * The first data item of the message was included in
-		       * the header - so add it to the rItems array.
-		       */
-		      rWant -= sizeof(GSPortMsgHeader);
-		      d = [mutableDataClass alloc];
-		      d = [d initWithBytes: bytes + sizeof(GSPortMsgHeader)
-				    length: rWant];
-		      [rItems addObject: d];
-		      RELEASE(d);
-		      rWant += sizeof(GSPortMsgHeader);
-		      rLength -= rWant;
-		      if (rLength > 0)
-			{
-			  memmove(bytes, bytes + rWant, rLength);
-			}
-		      rWant = sizeof(GSPortItemHeader);
-		      if (nItems == 1)
-			{
-			  shouldDispatch = YES;
-			}
+		      memmove(bytes, bytes + rWant, rLength);
 		    }
-		  else
-		    {
-		      /*
-		       * want to read another item
-		       */
-		      rLength -= rWant;
-		      if (rLength > 0)
-			{
-			  memmove(bytes, bytes + rWant, rLength);
-			}
-		      rWant = sizeof(GSPortItemHeader);
-		    }
+		  rWant = l;
 		}
-		break;
+	      else
+	        {
+	          NSLog(@"%@ - bad data received on port handle, rType=%i", self, rType);
+	          [self invalidate];
+	          return;
+	        }
+	    }
+	    break;
 
-	      case GSP_DATA:
-		{
-		  NSData	*d;
+	  case GSP_HEAD:
+	    {
+	      GSPortMsgHeader	*h;
 
-		  rType = GSP_NONE;	/* ready for a new item	*/
-		  d = [mutableDataClass allocWithZone: NSDefaultMallocZone()];
-		  d = [d initWithBytes: bytes length: rWant];
+	      rType = GSP_NONE;	/* ready for a new item	*/
+	      /*
+	       * We have read a message header - set up to read the
+	       * remainder of the message.
+	       */
+	      h = (GSPortMsgHeader*)bytes;
+	      rId = GSSwapBigI32ToHost(h->mId);
+	      nItems = GSSwapBigI32ToHost(h->nItems);
+	      NSAssert(nItems >0, NSInternalInconsistencyException);
+	      rItems
+	        = [mutableArrayClass allocWithZone: NSDefaultMallocZone()];
+	      rItems = [rItems initWithCapacity: nItems];
+	      if (rWant > sizeof(GSPortMsgHeader))
+	        {
+	          NSData	*d;
+
+		  /*
+		   * The first data item of the message was included in
+		   * the header - so add it to the rItems array.
+		   */
+		  rWant -= sizeof(GSPortMsgHeader);
+		  d = [mutableDataClass alloc];
+		  d = [d initWithBytes: bytes + sizeof(GSPortMsgHeader)
+				length: rWant];
 		  [rItems addObject: d];
 		  RELEASE(d);
+		  rWant += sizeof(GSPortMsgHeader);
 		  rLength -= rWant;
 		  if (rLength > 0)
 		    {
 		      memmove(bytes, bytes + rWant, rLength);
 		    }
 		  rWant = sizeof(GSPortItemHeader);
-		  if (nItems == [rItems count])
+		  if (nItems == 1)
 		    {
 		      shouldDispatch = YES;
 		    }
 		}
-		break;
-
-	      case GSP_PORT:
+	      else
 		{
-		  NSMessagePort	*p;
-
-		  rType = GSP_NONE;	/* ready for a new item	*/
-		  p = decodePort(rData);
-		  if (p == nil)
-		    {
-		      NSLog(@"%@ - unable to decode remote port", self);
-		      M_UNLOCK(myLock);
-		      [self invalidate];
-		      return;
-		    }
 		  /*
-		   * Set up to read another item header.
+		   * want to read another item
 		   */
-		  rLength -= rWant;
-		  if (rLength > 0)
-		    {
+	          rLength -= rWant;
+	          if (rLength > 0)
+	            {
 		      memmove(bytes, bytes + rWant, rLength);
 		    }
 		  rWant = sizeof(GSPortItemHeader);
-
-		  if (state == GS_H_ACCEPT)
-		    {
-		      /*
-		       * This is the initial port information on a new
-		       * connection - set up port relationships.
-		       */
-		      state = GS_H_CONNECTED;
-		      [p addHandle: self forSend: YES];
-		    }
-		  else
-		    {
-		      /*
-		       * This is a port within a port message - add
-		       * it to the message components.
-		       */
-		      [rItems addObject: p];
-		      if (nItems == [rItems count])
-			{
-			  shouldDispatch = YES;
-			}
-		    }
-		}
-		break;
+	        }
 	    }
+	    break;
 
-	  if (shouldDispatch == YES)
+	  case GSP_DATA:
+            {
+	      NSData	*d;
+
+	      rType = GSP_NONE;	/* ready for a new item	*/
+	      d = [mutableDataClass allocWithZone: NSDefaultMallocZone()];
+	      d = [d initWithBytes: bytes length: rWant];
+	      [rItems addObject: d];
+	      RELEASE(d);
+	      rLength -= rWant;
+	      if (rLength > 0)
+	        {
+	          memmove(bytes, bytes + rWant, rLength);
+	        }
+	      rWant = sizeof(GSPortItemHeader);
+	      if (nItems == [rItems count])
+	        {
+	          shouldDispatch = YES;
+	        }
+	    }
+	    break;
+
+	  case GSP_PORT:
 	    {
-	      NSPortMessage	*pm;
-	      NSMessagePort		*rp = [self recvPort];
+	      NSMessagePort	*p;
 
-	      pm = [portMessageClass allocWithZone: NSDefaultMallocZone()];
-	      pm = [pm initWithSendPort: [self sendPort]
-			    receivePort: rp
-			     components: rItems];
-	      [pm setMsgid: rId];
-	      rId = 0;
-	      DESTROY(rItems);
-	      NSDebugMLLog(@"NSMessagePort_details",
-		@"got message %@ on 0x%x in thread 0x%x",
+	      rType = GSP_NONE;	/* ready for a new item	*/
+	      p = decodePort(rData);
+	      if (p == nil)
+	        {
+	          NSLog(@"%@ - unable to decode remote port", self);
+	          [self invalidate];
+	          return;
+	        }
+	      /*
+	       * Set up to read another item header.
+	       */
+	      rLength -= rWant;
+	      if (rLength > 0)
+	        {
+	          memmove(bytes, bytes + rWant, rLength);
+	        }
+	      rWant = sizeof(GSPortItemHeader);
+
+	      if (state == GS_H_ACCEPT)
+	        {
+	          /*
+	           * This is the initial port information on a new
+	           * connection - set up port relationships.
+	           */
+	          state = GS_H_CONNECTED;
+	          [p addHandle: self forSend: YES];
+	        }
+	      else
+	        {
+	          /*
+	           * This is a port within a port message - add
+	           * it to the message components.
+	           */
+	          [rItems addObject: p];
+	          if (nItems == [rItems count])
+	            {
+		      shouldDispatch = YES;
+		    }
+		}
+	    }
+	    break;
+	}
+
+      if (shouldDispatch == YES)
+        {
+          NSPortMessage	*pm;
+          NSMessagePort		*rp = [self recvPort];
+
+          pm = [portMessageClass allocWithZone: NSDefaultMallocZone()];
+          pm = [pm initWithSendPort: [self sendPort]
+       		        receivePort: rp
+		         components: rItems];
+	  [pm setMsgid: rId];
+          rId = 0;
+	  DESTROY(rItems);
+          NSDebugMLLog(@"NSMessagePort_details",
+        	@"got message %@ on 0x%x in thread 0x%x",
 		pm, self, GSCurrentThread());
-	      RETAIN(rp);
-	      M_UNLOCK(myLock);
-	      NS_DURING
-		{
-		  [rp handlePortMessage: pm];
-		}
-	      NS_HANDLER
-		{
-		  M_LOCK(myLock);
-		  RELEASE(pm);
-		  RELEASE(rp);
-		  [localException raise];
-		}
-	      NS_ENDHANDLER
+	  RETAIN(rp);
+	  M_UNLOCK(myLock);
+	  NS_DURING
+	    {
+	      [rp handlePortMessage: pm];
+	    }
+	  NS_HANDLER
+	    {
 	      M_LOCK(myLock);
 	      RELEASE(pm);
 	      RELEASE(rp);
-	      bytes = [rData mutableBytes];
+	      [localException raise];
 	    }
+	  NS_ENDHANDLER
+	  M_LOCK(myLock);
+	  RELEASE(pm);
+	  RELEASE(rp);
+	  bytes = [rData mutableBytes];
+	}
+    }
+}
+
+- (void) receivedEventWrite
+{
+  if (state == GS_H_TRYCON)	/* Connection attempt.	*/
+    {
+      int	res = 0;
+      int	len = sizeof(res);
+
+      if (getsockopt(desc, SOL_SOCKET, SO_ERROR, (char*)&res, &len) == 0
+        && res != 0)
+        {
+          state = GS_H_UNCON;
+	  NSLog(@"connect attempt failed - %s", GSLastErrorStr(res));
+        }
+      else
+        {
+          NSData	*d = newDataWithEncodedPort([self recvPort]);
+
+#ifdef __MINGW__
+          len = send(desc, [d bytes], [d length], 0);
+#else
+          len = write(desc, [d bytes], [d length]);
+#endif
+          if (len == (int)[d length])
+            {
+	      NSDebugMLLog(@"NSMessagePort_details",
+	        @"wrote %d bytes on 0x%x in thread 0x%x",
+	        len, self, GSCurrentThread());
+	      state = GS_H_CONNECTED;
+	    }
+	  else
+            {
+	      state = GS_H_UNCON;
+	      NSLog(@"connect write attempt failed - %s",
+	        GSLastErrorStr(errno));
+	    }
+	  RELEASE(d);
 	}
     }
   else
     {
-      if (state == GS_H_TRYCON)	/* Connection attempt.	*/
-	{
-	  int	res = 0;
-	  int	len = sizeof(res);
+      int		res;
+      unsigned	l;
+      const void	*b;
 
-	  if (getsockopt(desc, SOL_SOCKET, SO_ERROR, (char*)&res, &len) == 0
-	    && res != 0)
+      if (wData == nil)
+        {
+          if ([wMsgs count] > 0)
 	    {
-	      state = GS_H_UNCON;
-	      NSLog(@"connect attempt failed - %s", GSLastErrorStr(res));
+	      NSArray	*components = [wMsgs objectAtIndex: 0];
+
+	      wData = [components objectAtIndex: wItem++];
+	      wLength = 0;
 	    }
 	  else
 	    {
-	      NSData	*d = newDataWithEncodedPort([self recvPort]);
-
-#ifdef __MINGW__
-	      len = send(desc, [d bytes], [d length], 0);
-#else
-	      len = write(desc, [d bytes], [d length]);
-#endif
-	      if (len == (int)[d length])
-		{
-		  NSDebugMLLog(@"NSMessagePort_details",
-		    @"wrote %d bytes on 0x%x in thread 0x%x",
-		    len, self, GSCurrentThread());
-		  state = GS_H_CONNECTED;
-		}
-	      else
-		{
-		  state = GS_H_UNCON;
-		  NSLog(@"connect write attempt failed - %s",
-		    GSLastErrorStr(errno));
-		}
-	      RELEASE(d);
+	      // NSLog(@"No messages to write on 0x%x.", self);
+	      return;
 	    }
 	}
-      else
-	{
-	  int		res;
-	  unsigned	l;
-	  const void	*b;
-
-	  if (wData == nil)
-	    {
-	      if ([wMsgs count] > 0)
-		{
-		  NSArray	*components = [wMsgs objectAtIndex: 0];
-
-		  wData = [components objectAtIndex: wItem++];
-		  wLength = 0;
-		}
-	      else
-		{
-		  // NSLog(@"No messages to write on 0x%x.", self);
-		  M_UNLOCK(myLock);
-		  return;
-		}
-	    }
-	  b = [wData bytes];
-	  l = [wData length];
+      b = [wData bytes];
+      l = [wData length];
 #ifdef __MINGW__
-	  res = send(desc, b + wLength,  l - wLength, 0);
+      res = send(desc, b + wLength,  l - wLength, 0);
 #else
-	  res = write(desc, b + wLength,  l - wLength);
+      res = write(desc, b + wLength,  l - wLength);
 #endif
-	  if (res < 0)
-	    {
-	      if (errno != EINTR && errno != EAGAIN)
-		{
-		  NSLog(@"write attempt failed - %s", GSLastErrorStr(errno));
-		  M_UNLOCK(myLock);
-		  [self invalidate];
-		  return;
-		}
+      if (res < 0)
+        {
+#ifdef __MINGW__
+          if ( WSAGetLastError()!= WSAEINTR &&
+               WSAGetLastError()!= WSAEWOULDBLOCK)
+#else
+          if (errno != EINTR && errno != EAGAIN)
+#endif
+            {
+	      NSLog(@"write attempt failed - %s", GSLastErrorStr(errno));
+	      [self invalidate];
+	      return;
 	    }
-	  else
+#ifdef __MINGW__
+	  if ( WSAGetLastError()== WSAEWOULDBLOCK )
 	    {
-	      NSDebugMLLog(@"NSMessagePort_details",
-		@"wrote %d bytes on 0x%x in thread 0x%x",
-		res, self, GSCurrentThread());
-	      wLength += res;
-	      if (wLength == l)
-		{
-		  NSArray	*components;
+	      readyToSend = NO;
+	    }
+#endif /* !__MINGW__ */
+	}
+      else
+        {
+          NSDebugMLLog(@"NSMessagePort_details",
+            @"wrote %d bytes on 0x%x in thread 0x%x",
+	    res, self, GSCurrentThread());
+	  wLength += res;
+	  if (wLength == l)
+	    {
+	      NSArray	*components;
 
-		  /*
-		   * We have completed a data item so see what is
-		   * left of the message components.
-		   */
-		  components = [wMsgs objectAtIndex: 0];
-		  wLength = 0;
-		  if ([components count] > wItem)
-		    {
-		      /*
-		       * More to write - get next item.
-		       */
-		      wData = [components objectAtIndex: wItem++];
-		    }
-		  else
-		    {
-		      /*
-		       * message completed - remove from list.
-		       */
-		      NSDebugMLLog(@"NSMessagePort_details",
-			@"completed 0x%x on 0x%x in thread 0x%x",
-			components, self, GSCurrentThread());
-		      wData = nil;
-		      wItem = 0;
-		      [wMsgs removeObjectAtIndex: 0];
-		    }
+	      /*
+	       * We have completed a data item so see what is
+	       * left of the message components.
+	       */
+	      components = [wMsgs objectAtIndex: 0];
+	      wLength = 0;
+	      if ([components count] > wItem)
+	        {
+	          /*
+	           * More to write - get next item.
+	           */
+	          wData = [components objectAtIndex: wItem++];
+	        }
+	      else
+	        {
+	          /*
+	           * message completed - remove from list.
+	           */
+	          NSDebugMLLog(@"NSMessagePort_details",
+	            @"completed 0x%x on 0x%x in thread 0x%x",
+		    components, self, GSCurrentThread());
+		  wData = nil;
+		  wItem = 0;
+		  [wMsgs removeObjectAtIndex: 0];
 		}
 	    }
 	}
     }
+}
+
+- (void) receivedEvent: (void*)data
+                  type: (RunLoopEventType)type
+		 extra: (void*)extra
+	       forMode: (NSString*)mode
+{
+#ifdef __MINGW32__
+  WSANETWORKEVENTS ocurredEvents;
+#endif
+  NSDebugMLLog(@"NSMessagePort_details", @"received %s event on 0x%x in thread 0x%x",
+    type == ET_RPORT ? "read" : "write", self, GSCurrentThread());
+  /*
+   * If we have been invalidated (desc < 0) then we should ignore this
+   * event and remove ourself from the runloop.
+   */
+  if (desc < 0)
+    {
+      NSRunLoop	*l = [runLoopClass currentRunLoop];
+
+#ifdef __MINGW32__
+      [l removeEvent: data
+		type: ET_HANDLE
+	     forMode: mode
+		 all: YES];
+#else
+      [l removeEvent: data
+		type: ET_WDESC
+	     forMode: mode
+		 all: YES];
+      [l removeEvent: data
+		type: ET_EDESC
+	     forMode: mode
+		 all: YES];
+#endif
+      return;
+    }
+
+  M_LOCK(myLock);
+
+#ifdef __MINGW32__
+  if(WSAEnumNetworkEvents(desc, event, &ocurredEvents)==SOCKET_ERROR)
+    {
+      NSLog(@"Error getting event type %d", WSAGetLastError());
+      abort();
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_CONNECT )
+    {
+      [self receivedEventWrite];
+      GSNotifyASAP();
+      if (desc == INVALID_SOCKET)
+        {
+          M_UNLOCK(myLock);
+          return;
+        }
+      ocurredEvents.lNetworkEvents ^= FD_CONNECT;
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_READ )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      if (desc == INVALID_SOCKET)
+        {
+          M_UNLOCK(myLock);
+          return;
+        }
+      ocurredEvents.lNetworkEvents ^= FD_READ;
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_OOB )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      if (desc == INVALID_SOCKET)
+        {
+          M_UNLOCK(myLock);
+          return;
+        }
+      ocurredEvents.lNetworkEvents ^= FD_OOB;
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_WRITE )
+    {
+      readyToSend = YES;
+      [self receivedEventWrite];
+      GSNotifyASAP();
+      if (desc == INVALID_SOCKET)
+        {
+          M_UNLOCK(myLock);
+          return;
+        }
+      ocurredEvents.lNetworkEvents ^= FD_WRITE;
+    }
+  if ( ocurredEvents.lNetworkEvents & FD_CLOSE )
+    {
+      [self receivedEventRead];
+      GSNotifyASAP();
+      if (desc == INVALID_SOCKET)
+        {
+          M_UNLOCK(myLock);
+          return;
+        }
+      ocurredEvents.lNetworkEvents ^= FD_CLOSE;
+    }
+  if ( ocurredEvents.lNetworkEvents )
+    {
+      NSLog(@"Event not get %d", ocurredEvents.lNetworkEvents );
+      abort();      
+    }
+#else
+  if (type == ET_RPORT)
+    {
+      [self receivedEventRead];
+    }
+  else
+    {
+      [self receivedEventWrite];
+    }
+#endif
 
   M_UNLOCK(myLock);
 }
@@ -1061,6 +1221,14 @@ static Class	runLoopClass;
 
   RETAIN(self);
 
+#ifdef __MINGW32__
+  NSAssert( event != WSA_INVALID_EVENT, @"Socket without win32 event!" );
+  [l addEvent: (void*)(gsaddr)event
+	 type: ET_HANDLE
+      watcher: self
+      forMode: NSConnectionReplyMode];
+  inReplyMode = YES;
+#else
   [l addEvent: (void*)(gsaddr)desc
 	 type: ET_WDESC
       watcher: self
@@ -1069,16 +1237,35 @@ static Class	runLoopClass;
 	 type: ET_EDESC
       watcher: self
       forMode: NSConnectionReplyMode];
+#endif
 
   while (valid == YES
     && [wMsgs indexOfObjectIdenticalTo: components] != NSNotFound
     && [when timeIntervalSinceNow] > 0)
     {
       M_UNLOCK(myLock);
+#ifdef __MINGW32__
+      if( readyToSend )
+        {
+          [self receivedEventWrite];
+        }
+      else
+        {
+          [l runMode: NSConnectionReplyMode beforeDate: when];
+        }
+#else
       [l runMode: NSConnectionReplyMode beforeDate: when];
+#endif  
       M_LOCK(myLock);
     }
 
+#ifdef __MINGW32__
+  [l removeEvent: (void*)(gsaddr)event
+	    type: ET_HANDLE
+	 forMode: NSConnectionReplyMode
+	     all: NO];
+  inReplyMode = NO;
+#else
   [l removeEvent: (void*)(gsaddr)desc
 	    type: ET_WDESC
 	 forMode: NSConnectionReplyMode
@@ -1087,6 +1274,7 @@ static Class	runLoopClass;
 	    type: ET_EDESC
 	 forMode: NSConnectionReplyMode
 	     all: NO];
+#endif
 
   if ([wMsgs indexOfObjectIdenticalTo: components] == NSNotFound)
     {
@@ -1255,6 +1443,11 @@ static int unique_index = 0;
       port->listener = -1;
       port->handles = NSCreateMapTable(NSIntMapKeyCallBacks,
 	NSObjectMapValueCallBacks, 0);
+#ifdef __MINGW32__
+      port->eventListener = WSA_INVALID_EVENT;
+      port->events = NSCreateMapTable(NSIntMapKeyCallBacks,
+        NSIntMapValueCallBacks, 0);
+#endif
       port->myLock = [GSLazyRecursiveLock new];
       port->_is_valid = YES;
 
@@ -1303,12 +1496,25 @@ static int unique_index = 0;
 	    }
 	  else
 	    {
+#ifdef __MINGW32__
+              int rc;
+#endif
 	      /*
 	       * Set up the listening descriptor and the actual message port
 	       * number (which will have been set to a real port number when
 	       * we did the 'bind' call.
 	       */
 	      port->listener = desc;
+#ifdef __MINGW32__
+              port->eventListener = (WSAEVENT)CreateEvent(NULL,NO,NO,NULL);
+              if( port->eventListener == WSA_INVALID_EVENT)
+                {
+                  NSLog( @"Invalid Event - '%d'", WSAGetLastError());
+                  abort();
+                }
+              rc = WSAEventSelect(port->listener, port->eventListener, FD_ACCEPT);
+              NSAssert( rc == 0, @"WSAEventSelect failed!");
+#endif
 	      /*
 	       * Make sure we have the map table for this port.
 	       */
@@ -1353,6 +1559,10 @@ static int unique_index = 0;
       handle->recvPort = GS_GC_HIDE(self);
     }
   NSMapInsert(handles, (void*)(gsaddr)[handle descriptor], (void*)handle);
+#ifdef __MINGW32__
+  NSMapInsert(events, (void*)(gsaddr)[handle eventHandle],
+          (void*)(gsaddr)[handle descriptor]);
+#endif
   M_UNLOCK(myLock);
 }
 
@@ -1387,6 +1597,50 @@ static int unique_index = 0;
  * This is a callback method used by the NSRunLoop class to determine which
  * descriptors to watch for the port.
  */
+#ifdef __MINGW32__
+- (void) getFds: (int*)fds count: (int*)count
+{
+  NSMapEnumerator	me;
+  WSAEVENT		event;
+  SOCKET                fd;
+  GSTcpHandle		*handle;
+  id			recvSelf;
+
+  M_LOCK(myLock);
+
+  /*
+   * Make sure there is enough room in the provided array.
+   */
+  NSAssert(*count > (int)NSCountMapTable(events),
+    NSInternalInconsistencyException);
+
+  /*
+   * Put in our listening socket.
+   */
+  *count = 0;
+  if (eventListener != WSA_INVALID_EVENT)
+    {
+      fds[(*count)++] = (gsaddr)eventListener;
+    }
+
+  /*
+   * Enumerate all our socket handles, and put them in as long as they
+   * are to be used for receiving.
+   */
+  recvSelf = GS_GC_HIDE(self);
+  me = NSEnumerateMapTable(events);
+  while (NSNextMapEnumeratorPair(&me, (void*)&event, (void*)&fd))
+    { 
+      handle = (GSTcpHandle*)NSMapGet(handles, (void*)(gsaddr)fd);
+      if (handle->recvPort == recvSelf && handle->inReplyMode == NO )
+	{
+	  fds[(*count)++] = (gsaddr)event;
+	}
+    }
+  NSEndMapTableEnumeration(&me);
+  M_UNLOCK(myLock);
+}
+#else
 - (void) getFds: (int*)fds count: (int*)count
 {
   NSMapEnumerator	me;
@@ -1427,6 +1681,7 @@ static int unique_index = 0;
   NSEndMapTableEnumeration(&me);
   M_UNLOCK(myLock);
 }
+#endif
 
 - (id) conversation: (NSPort*)recvPort
 {
@@ -1571,6 +1826,10 @@ static int unique_index = 0;
 	      (void) close(listener);
 	      unlink([name bytes]);
 	      listener = -1;
+#ifdef __MINGW32__
+              WSACloseEvent(eventListener);
+              eventListener = WSA_INVALID_EVENT;                   
+#endif
 	    }
 	  NSMapRemove(messagePortMap, (void*)name);
 	  M_UNLOCK(messagePortLock);
@@ -1596,6 +1855,13 @@ static int unique_index = 0;
 		  handles = 0;
 		}
 	    }
+#ifdef __MINGW32__
+	  if(events != 0 )
+	    {
+	      NSFreeMapTable(events);
+	      events = 0;
+	    }
+#endif
 	  [[NSMessagePortNameServer sharedInstance] removePort: self];
 	  [super invalidate];
 	}
@@ -1623,10 +1889,19 @@ static int unique_index = 0;
 		 extra: (void*)extra
 	       forMode: (NSString*)mode
 {
+#ifdef __MINGW32__
+  WSAEVENT      event = (WSAEVENT)extra;
+  SOCKET	desc;
+#else
   int		desc = (int)(gsaddr)extra;
+#endif
   GSMessageHandle	*handle;
 
+#ifdef __MINGW32__
+  if (event == eventListener)
+#else
   if (desc == listener)
+#endif
     {
       struct sockaddr_un	sockAddr;
       int			size = sizeof(sockAddr);
@@ -1639,6 +1914,10 @@ static int unique_index = 0;
         }
       else
 	{
+#ifdef __MINGW32__
+	  // reset associated event with new socket
+	  WSAEventSelect( desc, eventListener, 0);
+#endif
 	  /*
 	   * Create a handle for the socket and set it up so we are its
 	   * receiving port, and it's waiting to get the port name from
@@ -1654,6 +1933,9 @@ static int unique_index = 0;
   else
     {
       M_LOCK(myLock);
+#ifdef __MINGW32__
+      desc = (SOCKET)NSMapGet(events, (void*)(gsaddr)event);
+#endif
       handle = (GSMessageHandle*)NSMapGet(handles, (void*)(gsaddr)desc);
       IF_NO_GC(AUTORELEASE(RETAIN(handle)));
       M_UNLOCK(myLock);
@@ -1661,9 +1943,13 @@ static int unique_index = 0;
 	{
 	  const char	*t;
 
+#ifdef __MINGW32__
+	  if (type == ET_HANDLE) t = "winhandle";
+#else
 	  if (type == ET_RDESC) t = "rdesc";
 	  else if (type == ET_WDESC) t = "wdesc";
 	  else if (type == ET_EDESC) t = "edesc";
+#endif
 	  else if (type == ET_RPORT) t = "rport";
 	  else t = "unknown";
 	  NSLog(@"No handle for event %s on descriptor %d", t, desc);
@@ -1702,6 +1988,9 @@ static int unique_index = 0;
       handle->recvPort = nil;
     }
   NSMapRemove(handles, (void*)(gsaddr)[handle descriptor]);
+#ifdef __MINGW32__
+  NSMapRemove(events, (void*)(gsaddr)[handle eventHandle]);
+#endif
   if (listener < 0 && NSCountMapTable(handles) == 0)
     {
       [self invalidate];
@@ -1924,4 +2213,3 @@ static int unique_index = 0;
 }
 
 @end
-

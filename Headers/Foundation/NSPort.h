@@ -204,7 +204,15 @@ typedef SOCKET NSSocketNativeHandle;
   NSString		*address;	/* Forced internet address.	*/
   gsu16			portNum;	/* TCP port in host byte order.	*/
   SOCKET		listener;
+#ifdef HAVE_WINDOWS_H
+  WSAEVENT        listenerWin;
+  NSMapTable        *handlesWin;
+#endif
   NSMapTable		*handles;	/* Handles indexed by socket.	*/
+#ifdef __MINGW32__
+  WSAEVENT              eventListener;
+  NSMapTable            *events;
+#endif
 }
 
 /**
@@ -325,6 +333,10 @@ typedef SOCKET NSSocketNativeHandle;
   NSRecursiveLock	*myLock;
   NSMapTable		*handles;	/* Handles indexed by socket.	*/
   int			listener;	/* Descriptor to listen on.	*/
+#ifdef __MINGW32__
+  WSAEVENT              eventListener;
+  NSMapTable            *events;
+#endif
 }
 
 - (int) _listener;
