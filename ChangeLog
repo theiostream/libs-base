@@ -1,3 +1,8 @@
+2001-03-23  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) bugfix ...
+	extend data if range has location in data, but extent beyond data.
+
 2001-03-23  Adam Fedor  <fedor@gnu.org>
 
 	* Source/NSSerializer.m (serializeToInfo): Use memcpy to serialize
