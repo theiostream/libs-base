@@ -1,3 +1,8 @@
+1999-02-22  Adam Fedor  <fedor@gnu.org>
+
+	* Version: update version.
+	* Source/NSProcessInfo.m: Change missing main message.
+
 Mon Feb 22   5:40:00 1999  Richard Frith-Macdonald <richard@brainstorm.co.uk>
 
 	Merged in alterations from main cvs branch made to wrong place 'cos
