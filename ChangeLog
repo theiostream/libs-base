@@ -1,3 +1,8 @@
+2001-04-01 2001  Nicola Pero  <n.pero@mi.flashnet.it>
+
+	* Source/GSValue.m ([-description]): Bug fix - was crashing upon
+	using %@ instead of %s for a char *.
+
 2001-03-31  Adam Fedor  <fedor@gnu.org>
 
 	* Documentation/announce.texi: Update.
