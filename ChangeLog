@@ -1,3 +1,15 @@
+Mon Feb 22   5:40:00 1999  Richard Frith-Macdonald <richard@brainstorm.co.uk>
+
+	Merged in alterations from main cvs branch made to wrong place 'cos
+	dawn branch was already created :-(
+	* Source/NSData.m: preserve file attributes when writing atomically
+	* Source/NSUser.m: Bugfixes for consistent naming of current user.
+	* Source/NSUserDefaults.m: Bugfixes so that running apps as root
+	doesn't mess up defaults database.
+	* Source/NSFileManager.m: Create files with correct ownership when
+	process is setuid to root - and provide facility for NSData to do same.
+	* Source/NSArray.m: Merged enumerator bugfix - missing @end
+
 1999-02-19  Adam Fedor  <fedor@gnu.org>
 
 	* Source/NSHost.m ([NSHost +currentHost]): Check for host not found.
