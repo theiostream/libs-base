@@ -1,3 +1,9 @@
+2001-03-24  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) bugfix ...
+	revert to check using '>' rather than '>=' to conform to documentation
+	and to be consistent with use of ranges in general.
+
 2001-03-23  Adam Fedor  <fedor@gnu.org>
 
 	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) Check location
