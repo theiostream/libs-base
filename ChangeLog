@@ -3,6 +3,9 @@
 	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) bugfix ...
 	revert to check using '>' rather than '>=' to conform to documentation
 	and to be consistent with use of ranges in general.
+	* Documentation/gsdoc/NSMutableData.gsdoc: documented primitive methods.
+	* Documentation/gsdoc/NSFunctions.gsdoc: Some documentation for NSRange
+	added.
 
 2001-03-23  Adam Fedor  <fedor@gnu.org>
 
