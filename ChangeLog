@@ -1,3 +1,8 @@
+2001-04-04  Adam Fedor  <fedor@gnu.org>
+
+	* config.guess: Update to latest version
+	* config.sub: Likewise.
+
 2001-04-01 2001  Nicola Pero  <n.pero@mi.flashnet.it>
 
 	* Source/GSValue.m ([-description]): Bug fix - was crashing upon
