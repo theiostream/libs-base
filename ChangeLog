@@ -1,3 +1,12 @@
+2001-03-23  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Source/NSObject.m: ([-methodSignatureForSelector:]) try to get a
+	valid method signature any way we can ... check for a valid method
+	first, use selector types next.  Avoid crash when given nul selector
+	as an argument.
+	* Source/NSMethodSignature.m: ([+signatureWithObjCTypes:]) don't
+	crash when given nul pointer as argument.
+
 2001-03-19  Jonathan Gapen  <jagapen@home.com>
 
 	* Source/NSString.m: Implement ([-localizedStringWithFormat:]).
