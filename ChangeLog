@@ -1,3 +1,8 @@
+2001-03-23  Adam Fedor  <fedor@gnu.org>
+
+	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) Check location
+	>= size.
+
 2001-03-23  Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) bugfix ...
