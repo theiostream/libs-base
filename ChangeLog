@@ -1,3 +1,11 @@
+2001-03-23  Adam Fedor  <fedor@gnu.org>
+
+	* Source/NSSerializer.m (serializeToInfo): Use memcpy to serialize
+	strings on machines that need word alignment.
+	* Source/NSTimeZone.m (decode): For decoding, likewise.
+
+	* Testing/thread-except.m: Use autorelease pools.
+
 2001-03-23  Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Source/NSFileManager.m: MINGW fixes by Michael Scheibler.
