@@ -3,6 +3,9 @@
 	* Version: 1.0.0
 	* NEWS: Regenerated.
 
+	* Source/NSData.m ([NSMutableDataMalloc
+	-replaceBytesInRange:withBytes:]): Check size, not length.
+
 2001-04-04  Adam Fedor  <fedor@gnu.org>
 
 	* config.guess: Update to latest version
