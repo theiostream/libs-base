@@ -43,8 +43,8 @@ include $(GNUSTEP_MAKEFILES)/subproject.make
 # Hack to avoid duplicate export symbols because of multiple subprojects
 # of libgnustep-base
 after-all::
-	$(ECHO_NOTHING)if [ "`wc -l subproject.def | grep -c 1`" != "1" ]; then \
+	$(ECHO_NOTHING)if [ \! -f subproject.def -o "`wc -l subproject.def | grep -c 1`" != "1" ]; then \
 	  $(RM) subproject.def; \
-	  echo "EXPORTS" > subproject.def; \
+	  echo "" > subproject.def; \
 	fi$(END_ECHO)
 
