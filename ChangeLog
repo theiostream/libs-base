@@ -1,3 +1,9 @@
+Tue Mar  2 17:04:51 1999  Adam Fedor  <fedor@ultra.doc.com>
+
+	* Source/TcpPort.m ([GSTcpPort
+	+portWithNumber:onHost:beforeDate:]): Fix typo in variable.
+	Change include <sys/errno> to <errno> (Needed on solaris).
+
 1999-03-01  Adam Fedor  <fedor@gnu.org>
 
 	* Update documentation.

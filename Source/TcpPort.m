@@ -84,7 +84,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-#include <sys/errno.h>
+#include <errno.h>
 #endif /* !__WIN32__ */
 
 static int debug_tcp_port = 0;
@@ -510,7 +510,7 @@ static GSTcpPort	*dummyPort = nil;
 	  const char *a = [[addresses objectAtIndex: i] cString];
 
 #ifndef HAVE_INET_ATON
-	  dummyPort->sin_addr.s_addr = inet_addr(a);
+	  dummyPort->addr.sin_addr.s_addr = inet_addr(a);
 #else
 	  if (inet_aton(a, &dummyPort->addr.sin_addr) == 0)
 	    {
@@ -731,7 +731,7 @@ static GSTcpPort	*dummyPort = nil;
 		  const char	*a = [[addresses objectAtIndex: i] cString];
 
 #ifndef HAVE_INET_ATON
-		  addr,sin_addr.s_addr = inet_addr(a);
+		  addr.sin_addr.s_addr = inet_addr(a);
 #else
 		  if (inet_aton(a, &addr.sin_addr) == 0)
 		    {
