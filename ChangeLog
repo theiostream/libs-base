@@ -1,3 +1,11 @@
+2001-03-26  Richard Frith-Macdonald <rfm@gnu.org>
+
+	* Headers/Foundation/NSObject.h: GS_EXPORT updates for MINGW
+	* Headers/Foundation/NSObCRuntime.h: ditto
+	* Headers/Foundation/NSRange.h: ditto
+	* Source/NSRange.m: ditto
+	Fixes suggested by Michael Scheibler
+	
 2001-03-24  Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Source/NSData.m: ([-replaceBytesInRange:withBytes:]) bugfix ...
