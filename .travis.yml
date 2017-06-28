@@ -5,6 +5,7 @@ compiler:
     - gcc
 env:
     - LIBRARY_COMBO=gnu-gnu-gnu
+    - LIBRARY_COMBO=gnu-gnu-gnu LEGACY_GCC=1
     - LIBRARY_COMBO=ng-gnu-gnu
     - LIBRARY_COMBO=ng-gnu-gnu BASE_ABI=--disable-mixed-abi
 matrix:
@@ -15,12 +16,26 @@ matrix:
           env: LIBRARY_COMBO=ng-gnu-gnu BASE_ABI=--disable-mixed-abi
         - compiler: clang
           env: LIBRARY_COMBO=gnu-gnu-gnu
+        - compiler: clang
+          env: LIBRARY_COMBO=gnu-gnu-gnu LEGACY_GCC=1
 sudo: required
 before_install:
-    - sudo apt-get -qq update
+    - >
+        if [ ! -z $LEGACY_GCC ];
+        then
+          sudo add-apt-repository "deb http://old-releases.ubuntu.com/ubuntu/ breezy main restricted universe multiverse" -y
+          sudo add-apt-repository "deb http://old-releases.ubuntu.com/ubuntu/ breezy-updates main restricted universe multiverse" -y
+          sudo add-apt-repository "deb http://old-releases.ubuntu.com/ubuntu/ breezy-security main restricted universe multiverse" -y
+
+          sudo apt-get -qq update;
+          sudo apt-get install -y --allow-unauthenticated gcc-3.4 gobjc-3.4;
+          export CC=gcc-3.4;
+        else
+          sudo apt-get -qq update;
+        fi;
     - sudo apt-get install -y cmake pkg-config libgnutls28-dev libgmp-dev libffi-dev libicu-dev libxml2-dev libxslt1-dev libssl-dev libavahi-client-dev zlib1g-dev
     - >
-        if [ $LIBRARY_COMBO = 'gnu-gnu-gnu' ];
+        if [ $LIBRARY_COMBO = 'gnu-gnu-gnu' ] && [ -z $LEGACY_GCC ];
         then
           if [ $CC = 'gcc' ];
           then
